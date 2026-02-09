@@ -6,5 +6,3 @@ services:
     env_file:
       - .env
     restart: unless-stopped
-    volumes:
-      - ./usage_data.json:/app/usage_data.json
