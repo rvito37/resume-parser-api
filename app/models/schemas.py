@@ -61,6 +61,7 @@ class ParseResponse(BaseModel):
 class HealthResponse(BaseModel):
     status: str
     version: str
+    environment: Optional[str] = None
 
 
 class UsageResponse(BaseModel):

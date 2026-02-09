@@ -7,3 +7,8 @@ venv
 usage_data.json
 .idea
 .vscode
+tests/
+nginx/
+requirements-dev.txt
+*.md
+.beads/

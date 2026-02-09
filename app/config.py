@@ -9,6 +9,12 @@ ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
 HOST = os.getenv("HOST", "0.0.0.0")
 PORT = int(os.getenv("PORT", "8000"))
 
+REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379/0")
+LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO")
+ENVIRONMENT = os.getenv("ENVIRONMENT", "development")
+CORS_ORIGINS = os.getenv("CORS_ORIGINS", "*")
+RAPIDAPI_PROXY_SECRET = os.getenv("RAPIDAPI_PROXY_SECRET", "")
+
 TIER_LIMITS = {
     "free": 50,
     "pro": 1000,

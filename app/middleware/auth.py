@@ -1,22 +1,32 @@
-import json
-import os
+import logging
 from datetime import datetime, timezone
+
 from fastapi import Request, HTTPException
-from app.config import API_KEYS, TIER_LIMITS
+from redis.asyncio import Redis
 
-USAGE_FILE = "usage_data.json"
+from app.config import API_KEYS, TIER_LIMITS, REDIS_URL, RAPIDAPI_PROXY_SECRET
 
+logger = logging.getLogger(__name__)
 
-def _load_usage() -> dict:
-    if os.path.exists(USAGE_FILE):
-        with open(USAGE_FILE, "r") as f:
-            return json.load(f)
-    return {}
+_redis: Redis | None = None
 
 
-def _save_usage(data: dict):
-    with open(USAGE_FILE, "w") as f:
-        json.dump(data, f, indent=2)
+async def init_redis():
+    global _redis
+    try:
+        _redis = Redis.from_url(REDIS_URL, decode_responses=True)
+        await _redis.ping()
+        logger.info("Redis connected")
+    except Exception:
+        logger.error("Failed to connect to Redis, rate limiting will be disabled")
+        _redis = None
+
+
+async def close_redis():
+    global _redis
+    if _redis:
+        await _redis.close()
+        logger.info("Redis connection closed")
 
 
 def _get_month_key() -> str:
@@ -33,6 +43,14 @@ def _get_month_end() -> str:
 
 
 def get_api_key(request: Request) -> str:
+    # RapidAPI proxy check
+    if RAPIDAPI_PROXY_SECRET:
+        proxy_secret = request.headers.get("X-RapidAPI-Proxy-Secret")
+        if proxy_secret == RAPIDAPI_PROXY_SECRET:
+            user = request.headers.get("X-RapidAPI-User", "rapidapi-user")
+            logger.info(f"RapidAPI request from user: {user}")
+            return f"rapidapi:{user}"
+
     api_key = request.headers.get("X-API-Key") or request.query_params.get("api_key")
     if not api_key:
         raise HTTPException(status_code=401, detail="Missing API key. Include X-API-Key header.")
@@ -41,53 +59,84 @@ def get_api_key(request: Request) -> str:
     return api_key
 
 
-def check_rate_limit(api_key: str) -> dict:
+async def check_rate_limit(api_key: str) -> dict:
     tier = API_KEYS.get(api_key, "free")
     limit = TIER_LIMITS.get(tier, 50)
     month_key = _get_month_key()
+    redis_key = f"usage:{api_key}:{month_key}"
 
-    usage = _load_usage()
-    key_usage = usage.get(api_key, {})
-    current_month_usage = key_usage.get(month_key, 0)
+    if not _redis:
+        logger.warning("Redis unavailable, skipping rate limit check")
+        return {
+            "tier": tier,
+            "requests_used": -1,
+            "requests_limit": limit,
+            "resets_at": _get_month_end(),
+        }
 
-    if current_month_usage >= limit:
-        raise HTTPException(
-            status_code=429,
-            detail={
-                "error": "Rate limit exceeded",
-                "tier": tier,
-                "limit": limit,
-                "used": current_month_usage,
-                "resets_at": _get_month_end(),
-                "upgrade": "Contact us to upgrade your plan.",
-            },
-        )
+    try:
+        current = await _redis.get(redis_key)
+        current_count = int(current) if current else 0
 
-    if api_key not in usage:
-        usage[api_key] = {}
-    usage[api_key][month_key] = current_month_usage + 1
-    _save_usage(usage)
+        if current_count >= limit:
+            raise HTTPException(
+                status_code=429,
+                detail={
+                    "error": "Rate limit exceeded",
+                    "tier": tier,
+                    "limit": limit,
+                    "used": current_count,
+                    "resets_at": _get_month_end(),
+                    "upgrade": "Contact us to upgrade your plan.",
+                },
+            )
 
-    return {
-        "tier": tier,
-        "requests_used": current_month_usage + 1,
-        "requests_limit": limit,
-        "resets_at": _get_month_end(),
-    }
+        new_count = await _redis.incr(redis_key)
+        if new_count == 1:
+            await _redis.expire(redis_key, 60 * 60 * 24 * 35)  # 35-day TTL
+
+        return {
+            "tier": tier,
+            "requests_used": new_count,
+            "requests_limit": limit,
+            "resets_at": _get_month_end(),
+        }
+    except HTTPException:
+        raise
+    except Exception:
+        logger.error("Redis error during rate limit check, allowing request")
+        return {
+            "tier": tier,
+            "requests_used": -1,
+            "requests_limit": limit,
+            "resets_at": _get_month_end(),
+        }
 
 
-def get_usage_without_increment(api_key: str) -> dict:
+async def get_usage_without_increment(api_key: str) -> dict:
     tier = API_KEYS.get(api_key, "free")
     limit = TIER_LIMITS.get(tier, 50)
     month_key = _get_month_key()
+    redis_key = f"usage:{api_key}:{month_key}"
 
-    usage = _load_usage()
-    key_usage = usage.get(api_key, {})
-    current_month_usage = key_usage.get(month_key, 0)
+    if not _redis:
+        return {
+            "tier": tier,
+            "requests_used": -1,
+            "requests_limit": limit,
+            "resets_at": _get_month_end(),
+        }
+
+    try:
+        current = await _redis.get(redis_key)
+        current_count = int(current) if current else 0
+    except Exception:
+        logger.error("Redis error during usage check")
+        current_count = -1
 
     return {
         "tier": tier,
-        "requests_used": current_month_usage,
+        "requests_used": current_count,
         "requests_limit": limit,
         "resets_at": _get_month_end(),
     }
