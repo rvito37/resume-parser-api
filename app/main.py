@@ -4,8 +4,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.models.schemas import ParseResponse, ParsedResume, HealthResponse, UsageResponse
 from app.services.document_parser import extract_text
 from app.services.ai_extractor import extract_resume_data
-from app.middleware.auth import get_api_key, check_rate_limit
-from app.config import MAX_FILE_SIZE, ALLOWED_CONTENT_TYPES
+from app.middleware.auth import get_api_key, check_rate_limit, get_usage_without_increment
+from app.config import MAX_FILE_SIZE
 
 app = FastAPI(
     title="Resume Parser API",
@@ -30,17 +30,7 @@ async def health():
 
 @app.get("/usage", response_model=UsageResponse)
 async def get_usage(api_key: str = Depends(get_api_key)):
-    usage = check_rate_limit(api_key)
-    # Decrement since check_rate_limit increments
-    # We just want to check, not consume
-    import json, os
-    from app.middleware.auth import USAGE_FILE, _load_usage, _save_usage, _get_month_key
-    data = _load_usage()
-    month_key = _get_month_key()
-    if api_key in data and month_key in data[api_key]:
-        data[api_key][month_key] -= 1
-        _save_usage(data)
-        usage["requests_used"] -= 1
+    usage = get_usage_without_increment(api_key)
     return UsageResponse(**usage)
 
 
@@ -49,14 +39,15 @@ async def parse_resume(
     file: UploadFile = File(..., description="Resume file (PDF, DOCX, or TXT)"),
     api_key: str = Depends(get_api_key),
 ):
-    # Check rate limit
-    usage_info = check_rate_limit(api_key)
+    check_rate_limit(api_key)
 
-    # Validate content type
     content_type = file.content_type
-    if content_type not in ALLOWED_CONTENT_TYPES:
-        # Try to detect by extension
-        filename = file.filename or ""
+    filename = file.filename or ""
+    if content_type not in (
+        "application/pdf",
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        "text/plain",
+    ):
         if filename.endswith(".pdf"):
             content_type = "application/pdf"
         elif filename.endswith(".docx"):
@@ -69,15 +60,12 @@ async def parse_resume(
                 detail=f"Unsupported file type: {content_type}. Accepted: PDF, DOCX, TXT",
             )
 
-    # Read file
     file_bytes = await file.read()
     if len(file_bytes) > MAX_FILE_SIZE:
         raise HTTPException(status_code=400, detail="File too large. Max 10MB.")
-
     if len(file_bytes) == 0:
         raise HTTPException(status_code=400, detail="Empty file.")
 
-    # Extract text
     try:
         raw_text = extract_text(file_bytes, content_type)
     except Exception as e:
@@ -86,28 +74,18 @@ async def parse_resume(
     if not raw_text.strip():
         return ParseResponse(success=False, error="No text could be extracted from the file.")
 
-    # Truncate very long resumes to save tokens
     if len(raw_text) > 15000:
         raw_text = raw_text[:15000]
 
-    # AI extraction
     try:
         parsed_data, tokens_used = await extract_resume_data(raw_text)
     except Exception as e:
         return ParseResponse(success=False, error=f"AI extraction failed: {str(e)}")
 
-    # Build response
     try:
         resume = ParsedResume(**parsed_data, raw_text=raw_text[:2000])
     except Exception:
-        # If validation fails, try to return what we can
         resume = ParsedResume(raw_text=raw_text[:2000])
-        for key, value in parsed_data.items():
-            if hasattr(resume, key):
-                try:
-                    setattr(resume, key, value)
-                except Exception:
-                    pass
 
     return ParseResponse(success=True, data=resume, tokens_used=tokens_used)
 
@@ -118,7 +96,7 @@ async def parse_resume_text(
     api_key: str = Depends(get_api_key),
 ):
     """Parse resume from plain text (no file upload needed)."""
-    usage_info = check_rate_limit(api_key)
+    check_rate_limit(api_key)
 
     if not text.strip():
         raise HTTPException(status_code=400, detail="Empty text.")

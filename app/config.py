@@ -16,7 +16,6 @@ TIER_LIMITS = {
     "mega": 100000,
 }
 
-# Parse API_KEYS from env: "key1:free,key2:pro,key3:ultra"
 _raw_keys = os.getenv("API_KEYS", "demo-key-123:free")
 API_KEYS: dict[str, str] = {}
 for entry in _raw_keys.split(","):
@@ -26,8 +25,3 @@ for entry in _raw_keys.split(","):
         API_KEYS[key.strip()] = tier.strip()
 
 MAX_FILE_SIZE = 10 * 1024 * 1024  # 10MB
-ALLOWED_CONTENT_TYPES = [
-    "application/pdf",
-    "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-    "text/plain",
-]

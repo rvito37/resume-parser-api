@@ -1,11 +1,9 @@
 import json
 import os
-import time
 from datetime import datetime, timezone
 from fastapi import Request, HTTPException
 from app.config import API_KEYS, TIER_LIMITS
 
-# Simple file-based usage tracking (replace with Redis/DB in production)
 USAGE_FILE = "usage_data.json"
 
 
@@ -65,7 +63,6 @@ def check_rate_limit(api_key: str) -> dict:
             },
         )
 
-    # Increment usage
     if api_key not in usage:
         usage[api_key] = {}
     usage[api_key][month_key] = current_month_usage + 1
@@ -74,6 +71,23 @@ def check_rate_limit(api_key: str) -> dict:
     return {
         "tier": tier,
         "requests_used": current_month_usage + 1,
+        "requests_limit": limit,
+        "resets_at": _get_month_end(),
+    }
+
+
+def get_usage_without_increment(api_key: str) -> dict:
+    tier = API_KEYS.get(api_key, "free")
+    limit = TIER_LIMITS.get(tier, 50)
+    month_key = _get_month_key()
+
+    usage = _load_usage()
+    key_usage = usage.get(api_key, {})
+    current_month_usage = key_usage.get(month_key, 0)
+
+    return {
+        "tier": tier,
+        "requests_used": current_month_usage,
         "requests_limit": limit,
         "resets_at": _get_month_end(),
     }

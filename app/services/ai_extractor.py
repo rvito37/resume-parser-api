@@ -56,7 +56,7 @@ Resume text:
 """
 
 
-async def extract_with_openai(text: str) -> dict:
+async def extract_with_openai(text: str) -> tuple[dict, int]:
     from openai import AsyncOpenAI
 
     client = AsyncOpenAI(api_key=OPENAI_API_KEY)
@@ -75,7 +75,7 @@ async def extract_with_openai(text: str) -> dict:
     return json.loads(content), tokens
 
 
-async def extract_with_anthropic(text: str) -> dict:
+async def extract_with_anthropic(text: str) -> tuple[dict, int]:
     from anthropic import AsyncAnthropic
 
     client = AsyncAnthropic(api_key=ANTHROPIC_API_KEY)
@@ -90,7 +90,6 @@ async def extract_with_anthropic(text: str) -> dict:
     content = response.content[0].text
     tokens = response.usage.input_tokens + response.usage.output_tokens
 
-    # Clean up potential markdown wrapping
     if content.startswith("```"):
         lines = content.split("\n")
         content = "\n".join(lines[1:-1])
